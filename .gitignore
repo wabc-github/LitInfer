@@ -88,3 +88,10 @@ htmlcov/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+docs/llaisys_interview_guide.md
+
+logs/
+
+docs/
+结果记录.txt
+test.exe

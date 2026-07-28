@@ -28,10 +28,13 @@ void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
             int64_t* max_idx_data = reinterpret_cast<int64_t*>(max_idx->data());
             
             fp16_t max_value = input_data[0];
+            float max_value_f = utils::cast<float>(max_value);
             int64_t max_index = 0;
             for (size_t i = 1; i < input_size; ++i) {
-                if (input_data[i]._v > max_value._v) {  // fp16_t is struct with _v field
+                float current = utils::cast<float>(input_data[i]);
+                if (current > max_value_f) {
                     max_value = input_data[i];
+                    max_value_f = current;
                     max_index = static_cast<int64_t>(i);
                 }
             }
@@ -45,10 +48,13 @@ void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
             int64_t* max_idx_data = reinterpret_cast<int64_t*>(max_idx->data());
             
             bf16_t max_value = input_data[0];
+            float max_value_f = utils::cast<float>(max_value);
             int64_t max_index = 0;
             for (size_t i = 1; i < input_size; ++i) {
-                if (input_data[i]._v > max_value._v) {  // bf16_t is struct with _v field
+                float current = utils::cast<float>(input_data[i]);
+                if (current > max_value_f) {
                     max_value = input_data[i];
+                    max_value_f = current;
                     max_index = static_cast<int64_t>(i);
                 }
             }

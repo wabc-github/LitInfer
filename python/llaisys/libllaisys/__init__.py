@@ -36,6 +36,7 @@ def load_shared_library():
     if not os.path.isfile(lib_path):
         raise FileNotFoundError(f"Shared library not found: {lib_path}")
 
+    print(f"[LLAISYS] Loading shared library: {lib_path}", flush=True)
     return ctypes.CDLL(str(lib_path))
 
 

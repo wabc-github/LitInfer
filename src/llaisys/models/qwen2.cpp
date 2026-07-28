@@ -1,14 +1,83 @@
 #include "qwen2.hpp"
 #include "llaisys/ops.h"
 #include "llaisys/tensor.h"
+#include "../../utils.hpp"
 #include <cstring>
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <string>
+#include <iostream>
 
 namespace llaisys {
 namespace models {
+
+static std::vector<float> tensor_to_float_vector(llaisysTensor_t tensor, size_t count) {
+    std::vector<float> values(count);
+    auto dtype = tensorGetDataType(tensor);
+    switch (dtype) {
+    case LLAISYS_DTYPE_F32: {
+        const float *data = reinterpret_cast<const float *>(tensorGetData(tensor));
+        std::copy(data, data + count, values.begin());
+        break;
+    }
+    case LLAISYS_DTYPE_F16: {
+        const fp16_t *data = reinterpret_cast<const fp16_t *>(tensorGetData(tensor));
+        for (size_t i = 0; i < count; ++i) values[i] = utils::cast<float>(data[i]);
+        break;
+    }
+    case LLAISYS_DTYPE_BF16: {
+        const bf16_t *data = reinterpret_cast<const bf16_t *>(tensorGetData(tensor));
+        for (size_t i = 0; i < count; ++i) values[i] = utils::cast<float>(data[i]);
+        break;
+    }
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
+    }
+    return values;
+}
+
+void Qwen2Model::validate_weights() const {
+    std::cerr << "[TRACE] validate_weights enter weights=" << _weights << std::endl;
+    if (!_weights) throw std::runtime_error("Qwen2 weights pointer is null");
+    std::cerr << "[TRACE] top weights in_embed=" << _weights->in_embed
+              << " out_embed=" << _weights->out_embed
+              << " out_norm_w=" << _weights->out_norm_w << std::endl;
+    if (!_weights->in_embed) throw std::runtime_error("Missing weight: model.embed_tokens.weight");
+    if (!_weights->out_embed) throw std::runtime_error("Missing weight: lm_head.weight or tied embed_tokens.weight");
+    if (!_weights->out_norm_w) throw std::runtime_error("Missing weight: model.norm.weight");
+
+    auto require_array = [](const char *name, llaisysTensor_t *arr) {
+        if (!arr) {
+            throw std::runtime_error(std::string("Missing weight array: ") + name);
+        }
+    };
+    require_array("attn_norm_w", _weights->attn_norm_w);
+    require_array("attn_q_w", _weights->attn_q_w);
+    require_array("attn_k_w", _weights->attn_k_w);
+    require_array("attn_v_w", _weights->attn_v_w);
+    require_array("attn_o_w", _weights->attn_o_w);
+    require_array("mlp_norm_w", _weights->mlp_norm_w);
+    require_array("mlp_gate_w", _weights->mlp_gate_w);
+    require_array("mlp_up_w", _weights->mlp_up_w);
+    require_array("mlp_down_w", _weights->mlp_down_w);
+
+    for (size_t i = 0; i < _meta.nlayer; ++i) {
+        auto layer_name = [i](const char *name) {
+            return std::string("Missing layer ") + std::to_string(i) + " weight: " + name;
+        };
+        if (!_weights->attn_norm_w[i]) throw std::runtime_error(layer_name("input_layernorm.weight"));
+        if (!_weights->attn_q_w[i]) throw std::runtime_error(layer_name("self_attn.q_proj.weight"));
+        if (!_weights->attn_k_w[i]) throw std::runtime_error(layer_name("self_attn.k_proj.weight"));
+        if (!_weights->attn_v_w[i]) throw std::runtime_error(layer_name("self_attn.v_proj.weight"));
+        if (!_weights->attn_o_w[i]) throw std::runtime_error(layer_name("self_attn.o_proj.weight"));
+        if (!_weights->mlp_norm_w[i]) throw std::runtime_error(layer_name("post_attention_layernorm.weight"));
+        if (!_weights->mlp_gate_w[i]) throw std::runtime_error(layer_name("mlp.gate_proj.weight"));
+        if (!_weights->mlp_up_w[i]) throw std::runtime_error(layer_name("mlp.up_proj.weight"));
+        if (!_weights->mlp_down_w[i]) throw std::runtime_error(layer_name("mlp.down_proj.weight"));
+    }
+}
 
 Qwen2Model::Qwen2Model(const LlaisysQwen2Meta &meta,
              const LlaisysQwen2Weights &weights,
@@ -18,7 +87,7 @@ Qwen2Model::Qwen2Model(const LlaisysQwen2Meta &meta,
       _weights(&weights),
       _device(device),
       _device_ids(device_ids){
-        init_kv_cache();
+        _kv_caches.resize(_meta.nlayer);
       }
 
 Qwen2Model::~Qwen2Model() {
@@ -28,12 +97,14 @@ Qwen2Model::~Qwen2Model() {
 
 
 void Qwen2Model::init_kv_cache() {
+    free_kv_cache();
     // 为每层创建KV-Cache张量
-    for (size_t i = 0; i < _meta.nlayer; ++i) {
-        auto& cache = _kv_caches[i];
-        cache.cur_len = 0;
+    for (size_t i = 0; i < _meta.nlayer; ++i) { // 模型的 Transformer 层数
+        auto& cache = _kv_caches[i];            // 存储每层的 KV 缓存对象（私有成员变量）,动态数组容器
+        cache.cur_len = 0;      // 当前缓存中已填充的有效 token 数量（初始为 0）
         // K/V缓存shape：[maxseq, nkvh, dh]
-        size_t shape_k[] = {_meta.maxseq, _meta.nkvh, _meta.dh};
+        size_t shape_k_data[] = {_meta.maxseq, _meta.nkvh, _meta.dh};    // maxseq: 模型支持的最大序列长度, nkvh: 每层注意力机制中 K/V 的头数, dh: 每个注意力头的维度
+        size_t* shape_k = shape_k_data;
         cache.k_cache = tensorCreate(shape_k, 3, _meta.dtype, _device, _device_ids[0]);
         cache.v_cache = tensorCreate(shape_k, 3, _meta.dtype, _device, _device_ids[0]);
     }
@@ -43,16 +114,25 @@ void Qwen2Model::free_kv_cache() {
     for (auto& cache : _kv_caches) {
         if (cache.k_cache) tensorDestroy(cache.k_cache);
         if (cache.v_cache) tensorDestroy(cache.v_cache);
+        cache.k_cache = nullptr;
+        cache.v_cache = nullptr;
         cache.cur_len = 0;
     }
 }
 
 // 核心推理逻辑
 int64_t Qwen2Model::infer(int64_t* token_ids, size_t ntoken) {
+    std::cerr << "[TRACE] Qwen2Model::infer enter ntoken=" << ntoken << std::endl;
+    validate_weights();
+    std::cerr << "[TRACE] weights validated" << std::endl;
+    if (!token_ids || ntoken == 0) throw std::runtime_error("infer: token_ids must not be empty");
     // 1. Embedding层
+    std::cerr << "[TRACE] forward_embedding start" << std::endl;
     llaisysTensor_t x = forward_embedding(token_ids, ntoken);
+    std::cerr << "[TRACE] forward_embedding done x=" << x << std::endl;
     // 2. 遍历所有层
     for (size_t i = 0; i < _meta.nlayer; ++i) {
+        std::cerr << "[TRACE] layer " << i << " start" << std::endl;
         // 2.1 RMSNorm（attention输入）
         llaisysTensor_t x_norm = forward_rms_norm(x, _weights->attn_norm_w[i], _meta.epsilon);
         // 2.2 SelfAttention（带KV-Cache）
@@ -117,11 +197,14 @@ int64_t Qwen2Model::infer(int64_t* token_ids, size_t ntoken) {
     
     // 5. ArgMax取最大概率token
     // 为ArgMax创建输出张量
-    size_t argmax_shape[] = {_meta.voc}; 
+    size_t argmax_shape[] = {1}; 
     llaisysTensor_t max_idx = tensorCreate(argmax_shape, 1, LLAISYS_DTYPE_I64, x_final_device_type, x_final_device_id);
     llaisysTensor_t max_val = tensorCreate(argmax_shape, 1, x_final_dtype, x_final_device_type, x_final_device_id);
+    llaisysTensor_t last_logits_2d = tensorSlice(logits, 0, ntoken - 1, ntoken);
+    size_t last_logits_shape[] = {_meta.voc};
+    llaisysTensor_t last_logits = tensorView(last_logits_2d, last_logits_shape, 1);
     
-    llaisysArgmax(max_idx, max_val, logits);  
+    llaisysArgmax(max_idx, max_val, last_logits);  
     
     int64_t next_token = *reinterpret_cast<int64_t*>(tensorGetData(max_idx));
     
@@ -129,6 +212,8 @@ int64_t Qwen2Model::infer(int64_t* token_ids, size_t ntoken) {
     tensorDestroy(x);
     tensorDestroy(x_final);
     tensorDestroy(logits);
+    tensorDestroy(last_logits_2d);
+    tensorDestroy(last_logits);
     tensorDestroy(max_idx);
     tensorDestroy(max_val);
     return next_token;
@@ -136,6 +221,9 @@ int64_t Qwen2Model::infer(int64_t* token_ids, size_t ntoken) {
 
 // 添加采样推理的实现
 int64_t Qwen2Model::infer_with_sampling(int64_t* token_ids, size_t ntoken, int top_k, float top_p, float temperature) {
+    std::cerr << "[TRACE] Qwen2Model::infer_with_sampling enter ntoken=" << ntoken << std::endl;
+    validate_weights();
+    if (!token_ids || ntoken == 0) throw std::runtime_error("infer_with_sampling: token_ids must not be empty");
     // 1. Embedding层
     llaisysTensor_t x = forward_embedding(token_ids, ntoken);
     // 2. 遍历所有层
@@ -201,23 +289,19 @@ int64_t Qwen2Model::infer_with_sampling(int64_t* token_ids, size_t ntoken, int t
     delete[] x_final_shape;
     
     llaisysLinear(logits, x_final, _weights->out_embed, nullptr);  
+    llaisysTensor_t last_logits_2d = tensorSlice(logits, 0, ntoken - 1, ntoken);
+    size_t last_logits_shape[] = {_meta.voc};
+    llaisysTensor_t last_logits = tensorView(last_logits_2d, last_logits_shape, 1);
 
-    // 5. 应用温度缩放
-    if (temperature != 1.0f) {
-        // 对logits应用温度缩放: logits = logits / temperature
-        // 这需要一个标量除法操作
-        // 为了简化，我们先获取数据指针直接操作
-        float* logits_data = reinterpret_cast<float*>(tensorGetData(logits));
-        for (size_t i = 0; i < _meta.voc; ++i) {
-            logits_data[i] /= temperature;
-        }
+    std::vector<float> logits_data = tensor_to_float_vector(last_logits, _meta.voc);
+    float safe_temperature = temperature > 0.0f ? temperature : 1.0f;
+    for (auto &logit : logits_data) {
+        logit /= safe_temperature;
     }
 
     // 6. Top-K 和 Top-P 采样
     // 这里需要实现Top-K和Top-P采样的逻辑
     // 为了实现Top-K和Top-P，我们需要获取logits数据并实现采样算法
-    float* logits_data = reinterpret_cast<float*>(tensorGetData(logits));
-    
     // 创建索引数组并根据logits值排序
     std::vector<std::pair<float, int>> logit_indices;
     for (size_t i = 0; i < _meta.voc; ++i) {
@@ -302,6 +386,8 @@ int64_t Qwen2Model::infer_with_sampling(int64_t* token_ids, size_t ntoken, int t
         tensorDestroy(x);
         tensorDestroy(x_final);
         tensorDestroy(logits);
+        tensorDestroy(last_logits_2d);
+        tensorDestroy(last_logits);
         
         return next_token;
     } else {
@@ -309,6 +395,8 @@ int64_t Qwen2Model::infer_with_sampling(int64_t* token_ids, size_t ntoken, int t
         tensorDestroy(x);
         tensorDestroy(x_final);
         tensorDestroy(logits);
+        tensorDestroy(last_logits_2d);
+        tensorDestroy(last_logits);
         return 0;
     }
 }
@@ -329,6 +417,7 @@ llaisysTensor_t Qwen2Model::forward_embedding(int64_t* token_ids, size_t ntoken)
 
 
 llaisysTensor_t Qwen2Model::forward_attention(const llaisysTensor_t& x, size_t layer_idx, size_t seq_len) {
+    (void)seq_len;
     // 获取当前层的权重参数
     llaisysTensor_t wq = _weights->attn_q_w[layer_idx];
     llaisysTensor_t wk = _weights->attn_k_w[layer_idx];
@@ -344,10 +433,12 @@ llaisysTensor_t Qwen2Model::forward_attention(const llaisysTensor_t& x, size_t l
     int x_device_id = tensorGetDeviceId(x);
     
     // 计算Q、K、V的输出形状
-    size_t q_shape[3] = {x_shape[0], x_shape[1], _meta.hs};
-    size_t k_shape[3] = {x_shape[0], x_shape[1], (_meta.hs/_meta.nh)*_meta.nkvh};
-    size_t v_shape[3] = {x_shape[0], x_shape[1], (_meta.hs/_meta.nh)*_meta.nkvh};
-    
+    // Q: [x_shape[0], num_heads, head_dim]  -> num_heads = _meta.nh, head_dim = _meta.dh
+    size_t q_shape[3] = {x_shape[0], _meta.nh, _meta.dh};
+    // K/V: [x_shape[0], num_key_value_heads, head_dim]
+    size_t k_shape[3] = {x_shape[0], _meta.nkvh, _meta.dh};
+    size_t v_shape[3] = {x_shape[0], _meta.nkvh, _meta.dh};
+
     // 创建Q、K、V张量
     llaisysTensor_t q = tensorCreate(q_shape, 3, x_dtype, x_device_type, x_device_id);
     llaisysTensor_t k = tensorCreate(k_shape, 3, x_dtype, x_device_type, x_device_id);
@@ -363,65 +454,106 @@ llaisysTensor_t Qwen2Model::forward_attention(const llaisysTensor_t& x, size_t l
     size_t cur_len = cache.cur_len;
     
     // 检查序列长度是否超出限制
-    if (cur_len + x_shape[1] > _meta.maxseq) {
+    if (cur_len + x_shape[0] > _meta.maxseq) {
         throw std::runtime_error("Sequence length exceeds maximum allowed length");
     }
+
+    std::vector<int64_t> pos_ids_vec(x_shape[0]);
+    for (size_t token_idx = 0; token_idx < x_shape[0]; ++token_idx) {
+        pos_ids_vec[token_idx] = static_cast<int64_t>(cur_len + token_idx);
+    }
+    size_t pos_shape[] = {x_shape[0]};
+    llaisysTensor_t pos_ids = tensorCreate(pos_shape, 1, LLAISYS_DTYPE_I64, x_device_type, x_device_id);
+    tensorLoad(pos_ids, pos_ids_vec.data());
+
+    llaisysTensor_t q_rope = tensorCreate(q_shape, 3, x_dtype, x_device_type, x_device_id);
+    llaisysTensor_t k_rope = tensorCreate(k_shape, 3, x_dtype, x_device_type, x_device_id);
+    llaisysROPE(q_rope, q, pos_ids, _meta.theta);
+    llaisysROPE(k_rope, k, pos_ids, _meta.theta);
     
     
     // 获取数据指针
     void* k_cache_ptr = tensorGetData(cache.k_cache);
     void* v_cache_ptr = tensorGetData(cache.v_cache);
-    void* k_ptr = tensorGetData(k);
+    void* k_ptr = tensorGetData(k_rope);
     void* v_ptr = tensorGetData(v);
     
     // 根据数据类型计算元素大小
     size_t element_size;
     switch (_meta.dtype) {
-        case 12: // float16
-        case 19: // bfloat16
+        case LLAISYS_DTYPE_F16:
+        case LLAISYS_DTYPE_BF16:
             element_size = sizeof(uint16_t);
             break;
-        case 13: // float32
+        case LLAISYS_DTYPE_F32:
             element_size = sizeof(float);
             break;
         default:
-            element_size = sizeof(float); // 默认
+            throw std::runtime_error("Unsupported dtype for KV cache");
     }
     
-    // 计算要复制的数据大小和目标偏移
-    size_t k_elements_per_seq = ((_meta.hs/_meta.nh)*_meta.nkvh) * _meta.dh;
-    size_t v_elements_per_seq = k_elements_per_seq;
+    // // 计算要复制的数据大小和目标偏移
+    // // 每个 token 在 cache 中的元素个数 = num_key_value_heads * head_dim
+    // size_t k_elements_per_seq = _meta.nkvh * _meta.dh;
+    // size_t v_elements_per_seq = k_elements_per_seq;
+
+    // size_t k_dst_offset = cur_len * k_elements_per_seq;
+    // size_t v_dst_offset = cur_len * v_elements_per_seq;
+
+    // // 计算要复制的字节数：按 x_shape[0]（当前 batch/片段的 token 数）
+    // size_t k_copy_bytes = x_shape[0] * k_elements_per_seq * element_size;
+    // size_t v_copy_bytes = x_shape[0] * v_elements_per_seq * element_size;
     
-    size_t k_dst_offset = cur_len * k_elements_per_seq;
-    size_t v_dst_offset = cur_len * v_elements_per_seq;
-    
-    // 计算总复制字节数
-    size_t k_copy_bytes = x_shape[1] * k_elements_per_seq * element_size;
-    size_t v_copy_bytes = x_shape[1] * v_elements_per_seq * element_size;
-    
-    // 将当前K、V复制到cache的正确位置
-    memcpy((char*)k_cache_ptr + k_dst_offset * element_size, k_ptr, k_copy_bytes);
-    memcpy((char*)v_cache_ptr + v_dst_offset * element_size, v_ptr, v_copy_bytes);
+    // // 将当前K、V复制到cache的正确位置
+    // memcpy((char*)k_cache_ptr + k_dst_offset * element_size, k_ptr, k_copy_bytes);
+    // memcpy((char*)v_cache_ptr + v_dst_offset * element_size, v_ptr, v_copy_bytes);
+
+    // 计算每个token的元素数量
+    size_t elements_per_token = _meta.nkvh * _meta.dh;
+
+    // 正确处理多token输入：逐个token复制到缓存
+    for (size_t token_idx = 0; token_idx < x_shape[0]; ++token_idx) {
+        size_t cache_dst_offset = (cur_len + token_idx) * elements_per_token;
+        size_t src_offset = token_idx * elements_per_token;
+        
+        memcpy((char*)k_cache_ptr + cache_dst_offset * element_size, 
+               (char*)k_ptr + src_offset * element_size, 
+               elements_per_token * element_size);
+        memcpy((char*)v_cache_ptr + cache_dst_offset * element_size, 
+               (char*)v_ptr + src_offset * element_size, 
+               elements_per_token * element_size);
+    }
     
     // 更新cache长度
-    cache.cur_len += x_shape[1];
+    cache.cur_len += x_shape[0];
     
     // 使用当前Q和完整的KV缓存进行注意力计算
-    size_t attn_out_shape[3] = {x_shape[0], x_shape[1], _meta.hs};
+    // 注意力输出采用 [seq_len, num_heads, head_dim]
+    size_t attn_out_shape[3] = {x_shape[0], _meta.nh, _meta.dh};
     llaisysTensor_t temp_attn = tensorCreate(attn_out_shape, 3, x_dtype, x_device_type, x_device_id);
-    
-    // 使用当前Q和完整的KV缓存进行注意力计算
-    llaisysSelfAttention(temp_attn, q, cache.k_cache, cache.v_cache, 1.0f/_meta.hs);
+
+    llaisysTensor_t valid_k_cache = tensorSlice(cache.k_cache, 0, 0, cache.cur_len);
+    llaisysTensor_t valid_v_cache = tensorSlice(cache.v_cache, 0, 0, cache.cur_len);
+
+    llaisysSelfAttention(temp_attn, q_rope, valid_k_cache, valid_v_cache, 1.0f / std::sqrt(static_cast<float>(_meta.dh)));
     
     // 应用输出投影
     llaisysTensor_t output = tensorCreate(x_shape, x_ndim, x_dtype, x_device_type, x_device_id);
-    llaisysLinear(output, temp_attn, wo, nullptr);
+    size_t attn_view_shape[] = {x_shape[0], _meta.hs};
+    llaisysTensor_t temp_attn_2d = tensorView(temp_attn, attn_view_shape, 2);
+    llaisysLinear(output, temp_attn_2d, wo, nullptr);
     
     // 清理临时张量（不要清理cache中的张量）
     delete[] x_shape;
     tensorDestroy(q);
     tensorDestroy(k);  // K已经被复制到cache，可以安全销毁
     tensorDestroy(v);  // V已经被复制到cache，可以安全销毁
+    tensorDestroy(q_rope);
+    tensorDestroy(k_rope);
+    tensorDestroy(pos_ids);
+    tensorDestroy(valid_k_cache);
+    tensorDestroy(valid_v_cache);
+    tensorDestroy(temp_attn_2d);
     tensorDestroy(temp_attn);
     
     return output;
@@ -455,14 +587,8 @@ llaisysTensor_t Qwen2Model::forward_mlp(const llaisysTensor_t& x, size_t layer_i
     llaisysLinear(gate_proj, x, gate_w, nullptr);
     llaisysLinear(up_proj, x, up_w, nullptr);
     
-    // 使用SwiGLU算子进行计算
-    size_t output_shape[2];
-    for(size_t i = 0; i < x_ndim - 1; i++) {
-        output_shape[i] = x_shape[i];
-    }
-    output_shape[x_ndim - 1] = _meta.hs; // 输出维度等于隐藏层大小
-    
-    llaisysTensor_t swiglu_output = tensorCreate(output_shape, x_ndim, x_dtype, x_device_type, x_device_id);
+    // SwiGLU 输出仍处在 intermediate_size，随后由 down_proj 投回 hidden_size。
+    llaisysTensor_t swiglu_output = tensorCreate(intermediate_shape, x_ndim, x_dtype, x_device_type, x_device_id);
     llaisysSwiGLU(swiglu_output, gate_proj, up_proj);
     
     // 创建最终输出张量

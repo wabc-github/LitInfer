@@ -151,21 +151,21 @@ void Tensor::debug() const {
     }
 }
 
-    bool Tensor::isContiguous() const {
-        const auto &sh = shape();
-        const auto &st = strides();
-            if (sh.empty()) return true;   
-        
-        size_t expect = 1;
-        for (size_t i = sh.size(); i-- > 0;) {
-            if (sh[i] == 1) continue;       // 长度为 1 的维可跳过
-            if((st[i] != static_cast<ptrdiff_t>(expect))){
-                return false;
-            }
-           expect*= sh[i];
+bool Tensor::isContiguous() const {
+    const auto &sh = shape();
+    const auto &st = strides();
+    if (sh.empty()) return true;
+
+    size_t expected = 1;
+    for (size_t i = sh.size(); i-- > 0;) {
+        if (sh[i] == 1) continue;
+        if (st[i] != static_cast<ptrdiff_t>(expected)) {
+            return false;
         }
-        return true;
+        expected *= sh[i];
     }
+    return true;
+}
 tensor_t Tensor::permute(const std::vector<size_t> &order) const {
   
     if (order.size() != ndim()) {
@@ -188,14 +188,24 @@ tensor_t Tensor::permute(const std::vector<size_t> &order) const {
     return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
 }
 tensor_t Tensor::view(const std::vector<size_t> &shape) const {
-    if(isContiguous() == true){
-        tensor_t tmp = create(shape, this->dtype(), this->deviceType(), this->deviceId()); 
-        tmp->_storage = this->_storage;
-        return tmp;
-    }else{
-
-        return contiguous()->view(shape);
+    size_t new_numel = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    if (new_numel != numel()) {
+        throw std::invalid_argument("view: element count mismatch");
     }
+
+    if (!isContiguous()) {
+        throw std::invalid_argument("view: tensor must be contiguous");
+    }
+
+    std::vector<ptrdiff_t> new_strides(shape.size());
+    size_t stride = 1;
+    for (size_t i = shape.size(); i-- > 0;) {
+        new_strides[i] = static_cast<ptrdiff_t>(stride);
+        stride *= shape[i];
+    }
+
+    TensorMeta new_meta{dtype(), shape, new_strides};
+    return tensor_t(new Tensor(new_meta, _storage, _offset));
 }
 
 tensor_t Tensor::slice(size_t dim, size_t start, size_t end) const {
@@ -234,7 +244,7 @@ void Tensor::load(const void *src_) {
 
 tensor_t Tensor::contiguous() const {
     if(isContiguous()){
-        return std::shared_ptr<Tensor>(new Tensor(_meta, _storage));
+        return std::shared_ptr<Tensor>(new Tensor(_meta, _storage, _offset));
     }else{
        
         const auto& sh  = shape();
@@ -257,10 +267,18 @@ tensor_t Tensor::contiguous() const {
         tensor_t dst(new Tensor(TensorMeta{dtype(), sh, c_str}, st, 0));
 
        
-        core::context().setDevice(deviceType(), deviceId());
-        core::context().runtime().api()->memcpy_sync(
-        dst->data(), data(), bytes,
-        deviceType() == LLAISYS_DEVICE_CPU ? LLAISYS_MEMCPY_H2H : LLAISYS_MEMCPY_H2D);
+        ASSERT(deviceType() == LLAISYS_DEVICE_CPU, "contiguous: non-CPU copy is not implemented yet.");
+        auto copy_recursive = [&](auto &&self, size_t dim, const std::byte *src, std::byte *dst_ptr) -> std::byte * {
+            if (dim == sh.size()) {
+                std::memcpy(dst_ptr, src, elementSize());
+                return dst_ptr + elementSize();
+            }
+            for (size_t i = 0; i < sh[dim]; ++i) {
+                dst_ptr = self(self, dim + 1, src + i * strides()[dim] * elementSize(), dst_ptr);
+            }
+            return dst_ptr;
+        };
+        copy_recursive(copy_recursive, 0, data(), dst->data());
 
         return dst;         
             

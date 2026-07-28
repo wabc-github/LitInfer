@@ -100,6 +100,9 @@ __C {
 
 		if (model->weights.in_embed) {
 			tensorDestroy(model->weights.in_embed);
+			if (model->weights.out_embed == model->weights.in_embed) {
+				model->weights.out_embed = nullptr;
+			}
 			model->weights.in_embed = nullptr;
 		}
 		if (model->weights.out_embed) {
@@ -126,6 +129,9 @@ __C {
 
     // 推理
 	__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
+		std::cerr << "[TRACE] llaisysQwen2ModelInfer enter model=" << model
+		          << " impl=" << (model ? model->impl.get() : nullptr)
+		          << " ntoken=" << ntoken << std::endl;
 		if (!model || !model->impl) return -1;
 		try {
 			return model->impl->infer(token_ids, ntoken);
@@ -147,8 +153,19 @@ __C {
         float top_p,
         float temperature
     ) {
+        std::cerr << "[TRACE] llaisysQwen2ModelInferWithSampling enter model=" << model
+                  << " impl=" << (model ? model->impl.get() : nullptr)
+                  << " ntoken=" << ntoken << std::endl;
         if (!model || !model->impl) return -1;
-        return model->impl->infer_with_sampling(token_ids, ntoken, top_k, top_p, temperature);
+        try {
+            return model->impl->infer_with_sampling(token_ids, ntoken, top_k, top_p, temperature);
+        } catch (const std::exception &e) {
+            std::cerr << "[ERROR] Qwen2 infer_with_sampling failed: " << e.what() << std::endl;
+            return -1;
+        } catch (...) {
+            std::cerr << "[ERROR] Qwen2 infer_with_sampling failed: unknown exception" << std::endl;
+            return -1;
+        }
     }
 
     

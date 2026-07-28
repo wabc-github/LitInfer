@@ -8,9 +8,9 @@ namespace models {
 
 // KV-Cache 结构体（每层的K/V缓存）
 struct Qwen2KVCache {
-    llaisysTensor_t k_cache;  // shape: [max_seq_len, nkvh, dh]
-    llaisysTensor_t v_cache;  // shape: [max_seq_len, nkvh, dh]
-    size_t cur_len;    // 当前缓存的token长度
+    llaisysTensor_t k_cache{nullptr};  // shape: [max_seq_len, nkvh, dh]
+    llaisysTensor_t v_cache{nullptr};  // shape: [max_seq_len, nkvh, dh]
+    size_t cur_len{0};    // 当前缓存的token长度
 };
 
 // Qwen2模型核心类
@@ -34,6 +34,7 @@ public:
     int64_t infer_with_sampling(int64_t* token_ids, size_t ntoken, int top_k, float top_p, float temperature);
 
 private:
+    void validate_weights() const;
     // 模型元信息
     LlaisysQwen2Meta _meta{};
     // 权重

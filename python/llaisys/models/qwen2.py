@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Sequence
 from ..libllaisys import (
     LIB_LLAISYS,
@@ -8,14 +10,12 @@ from ..libllaisys import (
     LlaisysQwen2Meta,
 )
 import ctypes
-from ctypes import byref, c_int, c_size_t, c_float, c_int64, c_uint32, c_void_p
+from ctypes import byref, c_int, c_size_t, c_float, c_int64, c_void_p
 from pathlib import Path
-import safetensors
-import random
-import math
 import json
-from pathlib import Path
-import numpy as np
+import mmap
+import struct
+import time
 
 
 
@@ -26,21 +26,27 @@ class Qwen2:
         self.device = device
         
         # 实例化模型元信息
-        self.meta = self._load_config()
+        print("Loading model config...\n", flush=True)
+        self.meta, _ = self._load_config()
+        print("Model config loaded.\n", flush=True)
         
         # 创建模型
         device_ids = (c_int * 1)(0)
+        print("Creating Qwen2 model...\n", flush=True)
         self.model = LIB_LLAISYS.llaisysQwen2ModelCreate(
             byref(self.meta),
             llaisysDeviceType_t(device),
             device_ids,
-            1
+            1,
         )
         
         if not self.model:
             raise RuntimeError("Failed to create Qwen2 model")
             
         # 加载权重
+        print("Loading model weights...\n", flush=True)
+        import numpy as np
+
         self._model_weights = LIB_LLAISYS.llaisysQwen2ModelWeights(self.model)
         def _dtype_to_llaisys(dtype: np.dtype) -> DataType:
             name = getattr(dtype, "name", str(dtype)).lower()
@@ -76,38 +82,68 @@ class Qwen2:
             LIB_LLAISYS.tensorLoad(tensor, c_void_p(arr.ctypes.data))
             return tensor
 
+        def _array_from_safetensors_buffer(mm, offset, dtype_name, shape):
+            count = int(np.prod(shape, dtype=np.int64))
+            dtype_map = {
+                "F64": "<f8",
+                "F32": "<f4",
+                "F16": "<f2",
+                "I64": "<i8",
+                "I32": "<i4",
+                "I16": "<i2",
+                "I8": "i1",
+                "U64": "<u8",
+                "U32": "<u4",
+                "U16": "<u2",
+                "U8": "u1",
+                "BOOL": "?",
+            }
+            if dtype_name == "BF16":
+                raw = np.frombuffer(mm, dtype="<u2", count=count, offset=offset)
+                bits = raw.astype(np.uint32) << 16
+                return bits.view(np.float32).astype(np.float16).reshape(shape)
+            if dtype_name not in dtype_map:
+                raise ValueError(f"Unsupported safetensors dtype: {dtype_name}")
+            return np.frombuffer(mm, dtype=dtype_map[dtype_name], count=count, offset=offset).reshape(shape)
+
+        def _iter_safetensors(file: Path):
+            with open(file, "rb") as f:
+                header_len = struct.unpack("<Q", f.read(8))[0]
+                header = json.loads(f.read(header_len))
+                data_start = 8 + header_len
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    for name, info in header.items():
+                        if name == "__metadata__":
+                            continue
+                        begin, _end = info["data_offsets"]
+                        shape = tuple(info["shape"])
+                        arr = _array_from_safetensors_buffer(
+                            mm,
+                            data_start + begin,
+                            info["dtype"],
+                            shape,
+                        )
+                        yield name, arr
+
         # 加载模型权重
-        for file in sorted(model_path.glob("*.safetensors")):
-            if use_torch_loader:
-                import torch
-                data_ = safetensors.safe_open(file, framework="pt", device="cpu")
-            else:
-                data_ = safetensors.safe_open(file, framework="numpy", device="cpu")
-            for name_ in data_.keys():
-                ## TODO: load the model weights
-                try:
-                    arr = data_.get_tensor(name_)
-                except TypeError:
-                    # numpy 无法处理 bfloat16 时，回退到 torch
-                    import torch
-                    data_ = safetensors.safe_open(file, framework="pt", device="cpu")
-                    arr = data_.get_tensor(name_)
-                    use_torch_loader = True
-                if use_torch_loader:
-                    if arr.dtype == torch.bfloat16:
-                        arr = arr.to(torch.float16)
-                    arr = arr.cpu().numpy()
+        loaded = set()
+        for file in sorted(self.model_path.glob("*.safetensors")):
+            print(f"Reading safetensors file: {file.name}", flush=True)
+            for name_, arr in _iter_safetensors(file):
                 tensor = _create_tensor_from_numpy(arr)
                 w = self._model_weights.contents
 
                 if name_ in {"model.embed_tokens.weight", "transformer.wte.weight"}:
                     w.in_embed = tensor
+                    loaded.add("in_embed")
                     continue
                 if name_ in {"lm_head.weight", "model.lm_head.weight"}:
                     w.out_embed = tensor
+                    loaded.add("out_embed")
                     continue
                 if name_ in {"model.norm.weight", "transformer.ln_f.weight"}:
                     w.out_norm_w = tensor
+                    loaded.add("out_norm_w")
                     continue
 
                 if name_.startswith("model.layers."):
@@ -119,32 +155,80 @@ class Qwen2:
 
                     if sub == "input_layernorm.weight":
                         w.attn_norm_w[layer] = tensor
+                        loaded.add(f"attn_norm_w.{layer}")
                     elif sub == "self_attn.q_proj.weight":
                         w.attn_q_w[layer] = tensor
+                        loaded.add(f"attn_q_w.{layer}")
                     elif sub == "self_attn.q_proj.bias":
                         w.attn_q_b[layer] = tensor
+                        loaded.add(f"attn_q_b.{layer}")
                     elif sub == "self_attn.k_proj.weight":
                         w.attn_k_w[layer] = tensor
+                        loaded.add(f"attn_k_w.{layer}")
                     elif sub == "self_attn.k_proj.bias":
                         w.attn_k_b[layer] = tensor
+                        loaded.add(f"attn_k_b.{layer}")
                     elif sub == "self_attn.v_proj.weight":
                         w.attn_v_w[layer] = tensor
+                        loaded.add(f"attn_v_w.{layer}")
                     elif sub == "self_attn.v_proj.bias":
                         w.attn_v_b[layer] = tensor
+                        loaded.add(f"attn_v_b.{layer}")
                     elif sub == "self_attn.o_proj.weight":
                         w.attn_o_w[layer] = tensor
+                        loaded.add(f"attn_o_w.{layer}")
                     elif sub == "post_attention_layernorm.weight":
                         w.mlp_norm_w[layer] = tensor
+                        loaded.add(f"mlp_norm_w.{layer}")
                     elif sub == "mlp.gate_proj.weight":
                         w.mlp_gate_w[layer] = tensor
+                        loaded.add(f"mlp_gate_w.{layer}")
                     elif sub == "mlp.up_proj.weight":
                         w.mlp_up_w[layer] = tensor
+                        loaded.add(f"mlp_up_w.{layer}")
                     elif sub == "mlp.down_proj.weight":
                         w.mlp_down_w[layer] = tensor
+                        loaded.add(f"mlp_down_w.{layer}")
 
         w = self._model_weights.contents
         if not w.out_embed and w.in_embed:
             w.out_embed = w.in_embed
+            loaded.add("out_embed(tied)")
+        self._validate_loaded_weights(loaded)
+        print("Model weights loaded.\n", flush=True)
+
+    def _validate_loaded_weights(self, loaded: set[str]):
+        required = {"in_embed", "out_embed", "out_embed(tied)", "out_norm_w"}
+        missing = []
+        if "in_embed" not in loaded:
+            missing.append("model.embed_tokens.weight")
+        if "out_embed" not in loaded and "out_embed(tied)" not in loaded:
+            missing.append("lm_head.weight or tied model.embed_tokens.weight")
+        if "out_norm_w" not in loaded:
+            missing.append("model.norm.weight")
+
+        layer_required = [
+            ("attn_norm_w", "input_layernorm.weight"),
+            ("attn_q_w", "self_attn.q_proj.weight"),
+            ("attn_k_w", "self_attn.k_proj.weight"),
+            ("attn_v_w", "self_attn.v_proj.weight"),
+            ("attn_o_w", "self_attn.o_proj.weight"),
+            ("mlp_norm_w", "post_attention_layernorm.weight"),
+            ("mlp_gate_w", "mlp.gate_proj.weight"),
+            ("mlp_up_w", "mlp.up_proj.weight"),
+            ("mlp_down_w", "mlp.down_proj.weight"),
+        ]
+        for layer in range(self.meta.nlayer):
+            for field, name in layer_required:
+                if f"{field}.{layer}" not in loaded:
+                    missing.append(f"model.layers.{layer}.{name}")
+
+        if missing:
+            preview = "\n  - ".join(missing[:20])
+            suffix = f"\n  ... and {len(missing) - 20} more" if len(missing) > 20 else ""
+            raise RuntimeError(f"Missing required Qwen2 weights:\n  - {preview}{suffix}")
+
+        print(f"Loaded required Qwen2 weights for {self.meta.nlayer} layers.", flush=True)
 
     def _load_config(self):
 
@@ -202,7 +286,7 @@ class Qwen2:
             c_int64(end_token),
         )
 
-        return model_meta
+        return model_meta, use_torch_loader
 
 
 
@@ -216,54 +300,82 @@ class Qwen2:
         top_p: float = 1.0,
         temperature: float = 1.0,
     ):
-        # 初始化KV缓存
-        LIB_LLAISYS.llaisysQwen2ModelInitKVCache(self.model_ptr)
-        
-        # 将输入转换为C兼容格式
-        input_tokens = list(inputs)
-        ntokens = len(input_tokens)
-        
-        # 首先处理所有初始输入tokens，构建KV Cache
-        c_tokens = (ctypes.c_int64 * ntokens)(*input_tokens)
-        # 使用基础推理函数处理初始输入
-        LIB_LLAISYS.llaisysQwen2ModelInfer(self.model_ptr, c_tokens, ntokens)
-        
-        generated_tokens = []
-        
-        # 生成新token - 每次只传递最新生成的token，利用KV Cache和采样参数
-        for i in range(max_new_tokens or 1):
-            # 获取用于推理的token
-            if i == 0:
-                # 第一次生成时，使用最后一个输入token
-                inference_token = input_tokens[-1]
-            else:
-                # 后续生成时，使用上一个生成的token
-                inference_token = generated_tokens[-1]
-            
-            c_inference_token = (ctypes.c_int64 * 1)(inference_token)
-            
-            # 调用模型推理，获取下一个token，使用采样参数
-            next_token = LIB_LLAISYS.llaisysQwen2ModelInferWithSampling(
-                self.model_ptr, 
-                c_inference_token, 
-                1,
-                top_k,
-                top_p,
-                temperature
-            )
-            
-            # 检查是否达到结束标记
-            if next_token == self.meta.end_token:
-                break
-                
-            generated_tokens.append(next_token)
-            
-        # 释放KV缓存
-        LIB_LLAISYS.llaisysQwen2ModelFreeKVCache(self.model_ptr)
-        
-        return generated_tokens  # 只返回新生成的token
+        tokens, _ = self.generate_profile(inputs, max_new_tokens, top_k, top_p, temperature)
+        return tokens
+
+    def generate_profile(
+        self,
+        inputs: Sequence[int],
+        max_new_tokens: int = None,
+        top_k: int = 1,
+        top_p: float = 1.0,
+        temperature: float = 1.0,
+    ):
+        max_new_tokens = 1 if max_new_tokens is None else max_new_tokens
+        if max_new_tokens <= 0:
+            return [], {
+                "prefill_seconds": 0.0,
+                "first_token_seconds": 0.0,
+                "decode_seconds": 0.0,
+                "decode_tokens_per_second": 0.0,
+                "generated_tokens": 0,
+            }
+
+        LIB_LLAISYS.llaisysQwen2ModelInitKVCache(self.model)
+        try:
+            input_tokens = list(inputs)
+            if not input_tokens:
+                raise ValueError("generate: inputs must not be empty")
+
+            generated_tokens = []
+
+            c_tokens = (ctypes.c_int64 * len(input_tokens))(*input_tokens)
+            prefill_start = time.perf_counter()
+            print(f"[LLAISYS] Calling infer model={self.model} ntokens={len(input_tokens)}", flush=True)
+            first_token = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, c_tokens, len(input_tokens))
+            prefill_seconds = time.perf_counter() - prefill_start
+            if first_token == self.meta.end_token:
+                return generated_tokens, {
+                    "prefill_seconds": prefill_seconds,
+                    "first_token_seconds": prefill_seconds,
+                    "decode_seconds": 0.0,
+                    "decode_tokens_per_second": 0.0,
+                    "generated_tokens": 0,
+                }
+            generated_tokens.append(first_token)
+
+            decode_start = time.perf_counter()
+            for _ in range(1, max_new_tokens):
+                c_inference_token = (ctypes.c_int64 * 1)(generated_tokens[-1])
+                if top_k == 1 and top_p >= 1.0 and temperature == 1.0:
+                    next_token = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, c_inference_token, 1)
+                else:
+                    next_token = LIB_LLAISYS.llaisysQwen2ModelInferWithSampling(
+                        self.model,
+                        c_inference_token,
+                        1,
+                        top_k,
+                        top_p,
+                        temperature,
+                    )
+
+                if next_token == self.meta.end_token:
+                    break
+                generated_tokens.append(next_token)
+
+            decode_seconds = time.perf_counter() - decode_start
+            decode_tokens = max(len(generated_tokens) - 1, 0)
+            return generated_tokens, {
+                "prefill_seconds": prefill_seconds,
+                "first_token_seconds": prefill_seconds,
+                "decode_seconds": decode_seconds,
+                "decode_tokens_per_second": decode_tokens / decode_seconds if decode_seconds > 0 else 0.0,
+                "generated_tokens": len(generated_tokens),
+            }
+        finally:
+            LIB_LLAISYS.llaisysQwen2ModelFreeKVCache(self.model)
 
     def __del__(self):
         # 销毁模型
-        if hasattr(self, 'model_ptr') and self.model_ptr:
-            LIB_LLAISYS.llaisysQwen2ModelDestroy(self.model_ptr)
+        if hasattr(self, 'model') and self.model:
+            LIB_LLAISYS.llaisysQwen2ModelDestroy(self.model)
