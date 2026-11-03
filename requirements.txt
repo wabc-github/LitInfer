@@ -1,0 +1,7 @@
+# ---- 运行推理服务所需依赖（serving）----
+# 核心推理仅需 numpy；服务化与分词额外需要：
+numpy>=1.24
+fastapi>=0.100
+uvicorn>=0.23
+pydantic>=2.0
+transformers>=4.40

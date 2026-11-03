@@ -1,0 +1,439 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp_utc": "2026-11-02T15:04:55.181339+00:00",
+    "command": [
+      "scripts/benchmark_cpu.py",
+      "--model",
+      "../DeepSeek-R1-Distill-Qwen-1.5B",
+      "--device",
+      "cpu",
+      "--max_steps",
+      "8",
+      "--repeats",
+      "3",
+      "--threads",
+      "8",
+      "--quantize",
+      "int8",
+      "--output",
+      "benchmarks/int8_t8.json"
+    ],
+    "os": "Windows-10-10.0.22621-SP0",
+    "python": "3.8.8 (default, Apr 13 2021, 15:08:03) [MSC v.1916 64 bit (AMD64)]",
+    "python_compiler": "MSC v.1916 64 bit (AMD64)",
+    "compiler": "MSVC via xmake",
+    "processor": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
+    "cpu_count": 8,
+    "omp_threads": "8",
+    "device": "cpu",
+    "model": "F:\\admin\\yyx\\PersonalFile\\就业\\转码\\LLMTrainingGroup\\DeepSeek-R1-Distill-Qwen-1.5B",
+    "dtype": "F16",
+    "quantize": "int8",
+    "git_commit": "211e0992f04b656061074baad6d30779da8e8236",
+    "git_dirty": true,
+    "max_steps": 8,
+    "repeats": 3,
+    "alignment_requested": false
+  },
+  "alignment": {
+    "status": "not_requested"
+  },
+  "summary": [
+    {
+      "prompt_index": 0,
+      "prompt": "Who are you?",
+      "ttft_ms": {
+        "median": 1655.599500000008,
+        "min": 1508.8865000000028,
+        "max": 1820.8748999999925
+      },
+      "decode_token_per_second": {
+        "median": 4.431642484459826,
+        "min": 3.7498715668988116,
+        "max": 4.9270885910940665
+      },
+      "decode_seconds": {
+        "median": 1.5795497999999952,
+        "min": 1.4207173000000068,
+        "max": 1.866730600000011
+      },
+      "tpot_ms": {
+        "median": 225.64997142857075,
+        "min": 202.95961428571528,
+        "max": 266.6758000000016
+      },
+      "rss_delta_mb": {
+        "median": 0.015625,
+        "min": 0.0078125,
+        "max": 0.09375
+      }
+    },
+    {
+      "prompt_index": 1,
+      "prompt": "Explain KV Cache in one paragraph.",
+      "ttft_ms": {
+        "median": 2256.1275999999993,
+        "min": 2248.52460000001,
+        "max": 2413.0082000000075
+      },
+      "decode_token_per_second": {
+        "median": 4.666586090280183,
+        "min": 3.680200850641646,
+        "max": 4.690613185099248
+      },
+      "decode_seconds": {
+        "median": 1.5000258999999971,
+        "min": 1.492342199999996,
+        "max": 1.9020700999999889
+      },
+      "tpot_ms": {
+        "median": 214.2894142857139,
+        "min": 213.1917428571423,
+        "max": 271.72429999999844
+      },
+      "rss_delta_mb": {
+        "median": 0.00390625,
+        "min": 0.0,
+        "max": 0.51171875
+      }
+    },
+    {
+      "prompt_index": 2,
+      "prompt": "Write a short C++ function that adds two integers.",
+      "ttft_ms": {
+        "median": 2589.051799999993,
+        "min": 2567.9257999999977,
+        "max": 2880.5559000000044
+      },
+      "decode_token_per_second": {
+        "median": 4.484906272186235,
+        "min": 4.081592908104061,
+        "max": 4.855189802547753
+      },
+      "decode_seconds": {
+        "median": 1.5607907000000125,
+        "min": 1.4417562000000004,
+        "max": 1.7150166999999925
+      },
+      "tpot_ms": {
+        "median": 222.9701000000018,
+        "min": 205.9651714285715,
+        "max": 245.00238571428466
+      },
+      "rss_delta_mb": {
+        "median": 0.0078125,
+        "min": 0.0078125,
+        "max": 0.69921875
+      }
+    }
+  ],
+  "samples": [
+    {
+      "prompt_index": 0,
+      "repeat": 0,
+      "prompt": "Who are you?",
+      "input_tokens": 10,
+      "generated_tokens": [
+        91786,
+        0,
+        358,
+        2776,
+        18183,
+        39350,
+        10911,
+        16
+      ],
+      "elapsed_seconds": 3.5260245999999995,
+      "metrics": {
+        "prefill_seconds": 1.655599500000008,
+        "first_token_seconds": 1.655599500000008,
+        "decode_seconds": 1.866730600000011,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 3.7498715668988116,
+        "time_per_decode_token_seconds": 0.2666758000000016,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.12890625,
+      "rss_after_mb": 1496.22265625,
+      "rss_delta_mb": 0.09375,
+      "ttft_ms": 1655.599500000008,
+      "decode_elapsed_seconds": 1.866730600000011,
+      "decode_token_per_second": 3.7498715668988116,
+      "tpot_ms": 266.6758000000016,
+      "aligned": null
+    },
+    {
+      "prompt_index": 0,
+      "repeat": 1,
+      "prompt": "Who are you?",
+      "input_tokens": 10,
+      "generated_tokens": [
+        91786,
+        0,
+        358,
+        2776,
+        18183,
+        39350,
+        10911,
+        16
+      ],
+      "elapsed_seconds": 3.4035848000000044,
+      "metrics": {
+        "prefill_seconds": 1.8208748999999926,
+        "first_token_seconds": 1.8208748999999926,
+        "decode_seconds": 1.5795497999999952,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.431642484459826,
+        "time_per_decode_token_seconds": 0.22564997142857074,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.23046875,
+      "rss_after_mb": 1496.23828125,
+      "rss_delta_mb": 0.0078125,
+      "ttft_ms": 1820.8748999999925,
+      "decode_elapsed_seconds": 1.5795497999999952,
+      "decode_token_per_second": 4.431642484459826,
+      "tpot_ms": 225.64997142857075,
+      "aligned": null
+    },
+    {
+      "prompt_index": 0,
+      "repeat": 2,
+      "prompt": "Who are you?",
+      "input_tokens": 10,
+      "generated_tokens": [
+        91786,
+        0,
+        358,
+        2776,
+        18183,
+        39350,
+        10911,
+        16
+      ],
+      "elapsed_seconds": 2.9333436000000006,
+      "metrics": {
+        "prefill_seconds": 1.5088865000000027,
+        "first_token_seconds": 1.5088865000000027,
+        "decode_seconds": 1.4207173000000068,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.9270885910940665,
+        "time_per_decode_token_seconds": 0.20295961428571527,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.23828125,
+      "rss_after_mb": 1496.25390625,
+      "rss_delta_mb": 0.015625,
+      "ttft_ms": 1508.8865000000028,
+      "decode_elapsed_seconds": 1.4207173000000068,
+      "decode_token_per_second": 4.9270885910940665,
+      "tpot_ms": 202.95961428571528,
+      "aligned": null
+    },
+    {
+      "prompt_index": 1,
+      "repeat": 0,
+      "prompt": "Explain KV Cache in one paragraph.",
+      "input_tokens": 14,
+      "generated_tokens": [
+        32313,
+        11,
+        773,
+        358,
+        1184,
+        311,
+        10339,
+        84648
+      ],
+      "elapsed_seconds": 4.153828599999997,
+      "metrics": {
+        "prefill_seconds": 2.2485246000000103,
+        "first_token_seconds": 2.2485246000000103,
+        "decode_seconds": 1.9020700999999889,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 3.680200850641646,
+        "time_per_decode_token_seconds": 0.2717242999999984,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.26171875,
+      "rss_after_mb": 1496.7734375,
+      "rss_delta_mb": 0.51171875,
+      "ttft_ms": 2248.52460000001,
+      "decode_elapsed_seconds": 1.9020700999999889,
+      "decode_token_per_second": 3.680200850641646,
+      "tpot_ms": 271.72429999999844,
+      "aligned": null
+    },
+    {
+      "prompt_index": 1,
+      "repeat": 1,
+      "prompt": "Explain KV Cache in one paragraph.",
+      "input_tokens": 14,
+      "generated_tokens": [
+        32313,
+        11,
+        773,
+        358,
+        1184,
+        311,
+        10339,
+        84648
+      ],
+      "elapsed_seconds": 3.9084987000000098,
+      "metrics": {
+        "prefill_seconds": 2.4130082000000073,
+        "first_token_seconds": 2.4130082000000073,
+        "decode_seconds": 1.492342199999996,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.690613185099248,
+        "time_per_decode_token_seconds": 0.2131917428571423,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.77734375,
+      "rss_after_mb": 1496.77734375,
+      "rss_delta_mb": 0.0,
+      "ttft_ms": 2413.0082000000075,
+      "decode_elapsed_seconds": 1.492342199999996,
+      "decode_token_per_second": 4.690613185099248,
+      "tpot_ms": 213.1917428571423,
+      "aligned": null
+    },
+    {
+      "prompt_index": 1,
+      "repeat": 2,
+      "prompt": "Explain KV Cache in one paragraph.",
+      "input_tokens": 14,
+      "generated_tokens": [
+        32313,
+        11,
+        773,
+        358,
+        1184,
+        311,
+        10339,
+        84648
+      ],
+      "elapsed_seconds": 3.7594840000000005,
+      "metrics": {
+        "prefill_seconds": 2.2561275999999992,
+        "first_token_seconds": 2.2561275999999992,
+        "decode_seconds": 1.5000258999999971,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.666586090280183,
+        "time_per_decode_token_seconds": 0.21428941428571388,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.796875,
+      "rss_after_mb": 1496.80078125,
+      "rss_delta_mb": 0.00390625,
+      "ttft_ms": 2256.1275999999993,
+      "decode_elapsed_seconds": 1.5000258999999971,
+      "decode_token_per_second": 4.666586090280183,
+      "tpot_ms": 214.2894142857139,
+      "aligned": null
+    },
+    {
+      "prompt_index": 2,
+      "repeat": 0,
+      "prompt": "Write a short C++ function that adds two integers.",
+      "input_tokens": 17,
+      "generated_tokens": [
+        32313,
+        11,
+        358,
+        1184,
+        311,
+        3270,
+        264,
+        2805
+      ],
+      "elapsed_seconds": 4.445380599999993,
+      "metrics": {
+        "prefill_seconds": 2.8805559000000045,
+        "first_token_seconds": 2.8805559000000045,
+        "decode_seconds": 1.5607907000000125,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.484906272186235,
+        "time_per_decode_token_seconds": 0.22297010000000178,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1496.80859375,
+      "rss_after_mb": 1497.5078125,
+      "rss_delta_mb": 0.69921875,
+      "ttft_ms": 2880.5559000000044,
+      "decode_elapsed_seconds": 1.5607907000000125,
+      "decode_token_per_second": 4.484906272186235,
+      "tpot_ms": 222.9701000000018,
+      "aligned": null
+    },
+    {
+      "prompt_index": 2,
+      "repeat": 1,
+      "prompt": "Write a short C++ function that adds two integers.",
+      "input_tokens": 17,
+      "generated_tokens": [
+        32313,
+        11,
+        358,
+        1184,
+        311,
+        3270,
+        264,
+        2805
+      ],
+      "elapsed_seconds": 4.307592900000003,
+      "metrics": {
+        "prefill_seconds": 2.589051799999993,
+        "first_token_seconds": 2.589051799999993,
+        "decode_seconds": 1.7150166999999925,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.081592908104061,
+        "time_per_decode_token_seconds": 0.24500238571428465,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1497.51953125,
+      "rss_after_mb": 1497.52734375,
+      "rss_delta_mb": 0.0078125,
+      "ttft_ms": 2589.051799999993,
+      "decode_elapsed_seconds": 1.7150166999999925,
+      "decode_token_per_second": 4.081592908104061,
+      "tpot_ms": 245.00238571428466,
+      "aligned": null
+    },
+    {
+      "prompt_index": 2,
+      "repeat": 2,
+      "prompt": "Write a short C++ function that adds two integers.",
+      "input_tokens": 17,
+      "generated_tokens": [
+        32313,
+        11,
+        358,
+        1184,
+        311,
+        3270,
+        264,
+        2805
+      ],
+      "elapsed_seconds": 4.013214500000004,
+      "metrics": {
+        "prefill_seconds": 2.5679257999999976,
+        "first_token_seconds": 2.5679257999999976,
+        "decode_seconds": 1.4417562000000004,
+        "decode_tokens": 7,
+        "decode_tokens_per_second": 4.855189802547753,
+        "time_per_decode_token_seconds": 0.2059651714285715,
+        "generated_tokens": 8
+      },
+      "rss_before_mb": 1497.53515625,
+      "rss_after_mb": 1497.54296875,
+      "rss_delta_mb": 0.0078125,
+      "ttft_ms": 2567.9257999999977,
+      "decode_elapsed_seconds": 1.4417562000000004,
+      "decode_token_per_second": 4.855189802547753,
+      "tpot_ms": 205.9651714285715,
+      "aligned": null
+    }
+  ]
+}

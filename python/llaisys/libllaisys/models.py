@@ -80,6 +80,30 @@ def load_models(lib):
     lib.llaisysQwen2ModelFreeKVCache.argtypes = [LlaisysQwen2Model]
     lib.llaisysQwen2ModelFreeKVCache.restype = None
 
+    lib.llaisysQwen2ModelQuantizeInt8.argtypes = [LlaisysQwen2Model]
+    lib.llaisysQwen2ModelQuantizeInt8.restype = None
+
+    # ---- 连续批处理引擎 ----
+    lib.llaisysEngineAddRequest.argtypes = [
+        LlaisysQwen2Model, POINTER(c_int64), c_size_t, c_int64]
+    lib.llaisysEngineAddRequest.restype = c_int64
+
+    lib.llaisysEngineStep.argtypes = [LlaisysQwen2Model, c_int, c_float, c_float]
+    lib.llaisysEngineStep.restype = c_size_t
+
+    lib.llaisysEngineHasUnfinished.argtypes = [LlaisysQwen2Model]
+    lib.llaisysEngineHasUnfinished.restype = c_int
+
+    lib.llaisysEngineNumSeqs.argtypes = [LlaisysQwen2Model]
+    lib.llaisysEngineNumSeqs.restype = c_size_t
+
+    lib.llaisysEngineIsFinished.argtypes = [LlaisysQwen2Model, c_int64]
+    lib.llaisysEngineIsFinished.restype = c_int
+
+    lib.llaisysEngineGetOutput.argtypes = [
+        LlaisysQwen2Model, c_int64, POINTER(c_int64), c_size_t]
+    lib.llaisysEngineGetOutput.restype = c_size_t
+
 
 __all__ = [
     "LlaisysQwen2Meta",

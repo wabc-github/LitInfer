@@ -1,6 +1,6 @@
 from .libllaisys import LIB_LLAISYS
 from .tensor import Tensor
-from ctypes import c_float, c_int
+from ctypes import c_float, c_int, c_size_t
 
 
 class Ops:
@@ -20,8 +20,10 @@ class Ops:
 
     @staticmethod
     def linear(out: Tensor, inp: Tensor, weight: Tensor, bias: Tensor):
+        # bias 可选：None 时向 C 层传 NULL 指针
+        bias_ref = bias.lib_tensor() if bias is not None else None
         LIB_LLAISYS.llaisysLinear(
-            out.lib_tensor(), inp.lib_tensor(), weight.lib_tensor(), bias.lib_tensor()
+            out.lib_tensor(), inp.lib_tensor(), weight.lib_tensor(), bias_ref
         )
 
     @staticmethod
@@ -53,3 +55,44 @@ class Ops:
     @staticmethod
     def swiglu(out: Tensor, gate: Tensor, up: Tensor):
         LIB_LLAISYS.llaisysSwiGLU(out.lib_tensor(), gate.lib_tensor(), up.lib_tensor())
+
+    # ---- INT8 weight-only 量化 ----
+    @staticmethod
+    def quantize_weight(q: Tensor, scale: Tensor, weight: Tensor):
+        LIB_LLAISYS.llaisysQuantizeWeight(
+            q.lib_tensor(), scale.lib_tensor(), weight.lib_tensor()
+        )
+
+    @staticmethod
+    def quant_linear(out: Tensor, inp: Tensor, q_weight: Tensor,
+                     scale: Tensor, bias: Tensor):
+        # bias 可选：None 时传 NULL
+        bias_ref = bias.lib_tensor() if bias is not None else None
+        LIB_LLAISYS.llaisysQuantLinear(
+            out.lib_tensor(), inp.lib_tensor(), q_weight.lib_tensor(),
+            scale.lib_tensor(), bias_ref
+        )
+
+    # ---- PagedAttention ----
+    @staticmethod
+    def paged_self_attention(attn_val: Tensor, q: Tensor,
+                             k_pool: Tensor, v_pool: Tensor,
+                             block_table: Tensor, context_len: int, scale: float):
+        LIB_LLAISYS.llaisysPagedSelfAttention(
+            attn_val.lib_tensor(), q.lib_tensor(),
+            k_pool.lib_tensor(), v_pool.lib_tensor(),
+            block_table.lib_tensor(), c_size_t(context_len), c_float(scale)
+        )
+
+    @staticmethod
+    def batched_paged_self_attention(attn_val: Tensor, q: Tensor,
+                                     k_pool: Tensor, v_pool: Tensor,
+                                     block_table: Tensor,
+                                     context_lens: Tensor, query_lens: Tensor,
+                                     scale: float):
+        LIB_LLAISYS.llaisysBatchedPagedSelfAttention(
+            attn_val.lib_tensor(), q.lib_tensor(),
+            k_pool.lib_tensor(), v_pool.lib_tensor(),
+            block_table.lib_tensor(),
+            context_lens.lib_tensor(), query_lens.lib_tensor(), c_float(scale)
+        )

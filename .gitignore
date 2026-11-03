@@ -27,6 +27,9 @@ cache/
 
 # JSON
 *.json
+# Benchmark raw evidence (JSON) is versioned; the narrative report is not.
+!benchmarks/*.json
+benchmarks/results.md
 
 #GGUF
 *.gguf

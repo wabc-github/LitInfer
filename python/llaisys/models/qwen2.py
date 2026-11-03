@@ -10,6 +10,7 @@ from ..libllaisys import (
     LlaisysQwen2Meta,
 )
 import ctypes
+import os
 from ctypes import byref, c_int, c_size_t, c_float, c_int64, c_void_p
 from pathlib import Path
 import json
@@ -21,9 +22,11 @@ import time
 
 class Qwen2:
 
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU):  # 添加dtype参数
+    def __init__(self, model_path, device: DeviceType = DeviceType.CPU,
+                 quantize: str = None):  # quantize: None 或 "int8"（weight-only）
         self.model_path = Path(model_path)
         self.device = device
+        self.quantization = quantize
         
         # 实例化模型元信息
         print("Loading model config...\n", flush=True)
@@ -197,6 +200,13 @@ class Qwen2:
         self._validate_loaded_weights(loaded)
         print("Model weights loaded.\n", flush=True)
 
+        # 可选 INT8 weight-only 量化（必须在权重加载完成后、推理前调用一次）。
+        # 量化会销毁原 fp16 权重，之后不可再切回 fp16。
+        if quantize == "int8":
+            print("Quantizing weights to INT8 (weight-only)...\n", flush=True)
+            LIB_LLAISYS.llaisysQwen2ModelQuantizeInt8(self.model)
+            print("INT8 quantization done.\n", flush=True)
+
     def _validate_loaded_weights(self, loaded: set[str]):
         required = {"in_embed", "out_embed", "out_embed(tied)", "out_norm_w"}
         missing = []
@@ -317,7 +327,9 @@ class Qwen2:
                 "prefill_seconds": 0.0,
                 "first_token_seconds": 0.0,
                 "decode_seconds": 0.0,
+                "decode_tokens": 0,
                 "decode_tokens_per_second": 0.0,
+                "time_per_decode_token_seconds": 0.0,
                 "generated_tokens": 0,
             }
 
@@ -326,20 +338,36 @@ class Qwen2:
             input_tokens = list(inputs)
             if not input_tokens:
                 raise ValueError("generate: inputs must not be empty")
+            max_seq_len = int(self.meta.maxseq)
+            if len(input_tokens) + max_new_tokens - 1 > max_seq_len:
+                raise ValueError(
+                    "generate: requested prompt and output exceed model max sequence length "
+                    f"({max_seq_len})"
+                )
 
             generated_tokens = []
 
             c_tokens = (ctypes.c_int64 * len(input_tokens))(*input_tokens)
+            trace_value = os.environ.get("LLAISYS_TRACE", "").lower()
+            if trace_value in {"1", "true", "on"}:
+                print(
+                    f"[LLAISYS] Calling infer model={self.model} "
+                    f"ntokens={len(input_tokens)}",
+                    flush=True,
+                )
             prefill_start = time.perf_counter()
-            print(f"[LLAISYS] Calling infer model={self.model} ntokens={len(input_tokens)}", flush=True)
             first_token = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, c_tokens, len(input_tokens))
+            if first_token < 0:
+                raise RuntimeError("LLAISYS prefill failed; check model inputs and max sequence length")
             prefill_seconds = time.perf_counter() - prefill_start
             if first_token == self.meta.end_token:
                 return generated_tokens, {
                     "prefill_seconds": prefill_seconds,
                     "first_token_seconds": prefill_seconds,
                     "decode_seconds": 0.0,
+                    "decode_tokens": 0,
                     "decode_tokens_per_second": 0.0,
+                    "time_per_decode_token_seconds": 0.0,
                     "generated_tokens": 0,
                 }
             generated_tokens.append(first_token)
@@ -359,6 +387,9 @@ class Qwen2:
                         temperature,
                     )
 
+                if next_token < 0:
+                    raise RuntimeError("LLAISYS decode failed")
+
                 if next_token == self.meta.end_token:
                     break
                 generated_tokens.append(next_token)
@@ -369,11 +400,100 @@ class Qwen2:
                 "prefill_seconds": prefill_seconds,
                 "first_token_seconds": prefill_seconds,
                 "decode_seconds": decode_seconds,
+                "decode_tokens": decode_tokens,
                 "decode_tokens_per_second": decode_tokens / decode_seconds if decode_seconds > 0 else 0.0,
+                "time_per_decode_token_seconds": decode_seconds / decode_tokens if decode_tokens > 0 else 0.0,
                 "generated_tokens": len(generated_tokens),
             }
         finally:
             LIB_LLAISYS.llaisysQwen2ModelFreeKVCache(self.model)
+
+    def generate_stream(self, inputs, max_new_tokens: int = 128,
+                        top_k: int = 1, top_p: float = 1.0,
+                        temperature: float = 1.0):
+        """流式生成：逐 token yield token id（生成器）。
+
+        与 generate_profile 的区别：每个 token 一生成就立即 yield，
+        供服务端做 SSE 实时推送。遍历结束、break 或调用方提前关闭
+        （generator.close）时，finally 都会释放 KV-Cache。
+        """
+        max_new_tokens = 1 if max_new_tokens is None else max_new_tokens
+        LIB_LLAISYS.llaisysQwen2ModelInitKVCache(self.model)
+        try:
+            input_tokens = list(inputs)
+            if not input_tokens:
+                raise ValueError("generate_stream: inputs must not be empty")
+            if len(input_tokens) + max_new_tokens - 1 > int(self.meta.maxseq):
+                raise ValueError("generate_stream: prompt and output exceed max sequence length")
+
+            # prefill：一次性处理全部 prompt，得到第一个 token。
+            c_tokens = (ctypes.c_int64 * len(input_tokens))(*input_tokens)
+            first = LIB_LLAISYS.llaisysQwen2ModelInfer(
+                self.model, c_tokens, len(input_tokens))
+            if first < 0:
+                raise RuntimeError("LLAISYS prefill failed")
+            if first == self.meta.end_token:
+                return  # 直接结束，不 yield
+            yield first
+
+            # decode：逐 token 生成，贪心走 infer，否则 infer_with_sampling。
+            prev = first
+            for _ in range(1, max_new_tokens):
+                c_in = (ctypes.c_int64 * 1)(prev)
+                if top_k == 1 and top_p >= 1.0 and temperature == 1.0:
+                    nxt = LIB_LLAISYS.llaisysQwen2ModelInfer(self.model, c_in, 1)
+                else:
+                    nxt = LIB_LLAISYS.llaisysQwen2ModelInferWithSampling(
+                        self.model, c_in, 1, top_k, top_p, temperature)
+                if nxt < 0:
+                    raise RuntimeError("LLAISYS decode failed")
+                if nxt == self.meta.end_token:
+                    break
+                yield nxt
+                prev = nxt
+        finally:
+            LIB_LLAISYS.llaisysQwen2ModelFreeKVCache(self.model)
+
+    # ---- 连续批处理引擎（P2-2）高层接口 ----
+    def engine_start(self):
+        """初始化共享分页池（开始批量服务前调用一次）。"""
+        LIB_LLAISYS.llaisysQwen2ModelInitKVCache(self.model)
+
+    def engine_add_request(self, inputs: Sequence[int], max_new_tokens: int = 128):
+        """提交一条请求（prompt token），返回该请求 id。"""
+        import numpy as np
+        arr = np.ascontiguousarray(list(inputs), dtype=np.int64)
+        cptr = arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int64))
+        return LIB_LLAISYS.llaisysEngineAddRequest(
+            self.model, cptr, c_size_t(arr.size), c_int64(max_new_tokens))
+
+    def engine_step(self, top_k: int = 1, top_p: float = 1.0,
+                    temperature: float = 1.0):
+        """推进一次调度：所有未完成请求同时做一次前向，返回本步完成数。"""
+        return LIB_LLAISYS.llaisysEngineStep(
+            self.model, c_int(top_k), c_float(top_p), c_float(temperature))
+
+    def engine_has_unfinished(self) -> bool:
+        return bool(LIB_LLAISYS.llaisysEngineHasUnfinished(self.model))
+
+    def engine_num_seqs(self) -> int:
+        return LIB_LLAISYS.llaisysEngineNumSeqs(self.model)
+
+    def engine_is_finished(self, req_id: int) -> bool:
+        return bool(LIB_LLAISYS.llaisysEngineIsFinished(
+            self.model, c_int64(req_id)))
+
+    def engine_get_output(self, req_id: int):
+        """取已完成请求的生成 token（不含 prompt）。未完成返回空列表。"""
+        cap = int(self.meta.maxseq)
+        buf = (c_int64 * cap)()
+        n = LIB_LLAISYS.llaisysEngineGetOutput(
+            self.model, c_int64(req_id), buf, c_size_t(cap))
+        return list(buf[:n])
+
+    def engine_stop(self):
+        """释放共享分页池。"""
+        LIB_LLAISYS.llaisysQwen2ModelFreeKVCache(self.model)
 
     def __del__(self):
         # 销毁模型

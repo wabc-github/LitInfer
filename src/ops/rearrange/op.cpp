@@ -1,6 +1,8 @@
 #include "op.hpp"
 #include <cstring>
 
+#include "../../utils.hpp"
+
 namespace llaisys::ops {
 template<typename T>
 void rearrange_kernel(T* out_data, const T* in_data, const std::vector<size_t>& shape, 
@@ -37,6 +39,7 @@ void rearrange_kernel(T* out_data, const T* in_data, const std::vector<size_t>& 
 }
 
 void rearrange(tensor_t out, tensor_t in) {
+    PROFILE("rearrange");  // 计时：rearrange
     CHECK_SAME_DEVICE(out, in);
     CHECK_SAME_DTYPE(out->dtype(), in->dtype());
     CHECK_SAME_SHAPE(out->shape(), in->shape());

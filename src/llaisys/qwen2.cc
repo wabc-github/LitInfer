@@ -129,9 +129,6 @@ __C {
 
     // 推理
 	__export int64_t llaisysQwen2ModelInfer(struct LlaisysQwen2Model *model, int64_t *token_ids, size_t ntoken) {
-		std::cerr << "[TRACE] llaisysQwen2ModelInfer enter model=" << model
-		          << " impl=" << (model ? model->impl.get() : nullptr)
-		          << " ntoken=" << ntoken << std::endl;
 		if (!model || !model->impl) return -1;
 		try {
 			return model->impl->infer(token_ids, ntoken);
@@ -153,9 +150,6 @@ __C {
         float top_p,
         float temperature
     ) {
-        std::cerr << "[TRACE] llaisysQwen2ModelInferWithSampling enter model=" << model
-                  << " impl=" << (model ? model->impl.get() : nullptr)
-                  << " ntoken=" << ntoken << std::endl;
         if (!model || !model->impl) return -1;
         try {
             return model->impl->infer_with_sampling(token_ids, ntoken, top_k, top_p, temperature);
@@ -179,5 +173,58 @@ __C {
     __export void llaisysQwen2ModelFreeKVCache(struct LlaisysQwen2Model *model) {
         if (!model || !model->impl) return;
         model->impl->free_kv_cache();
+    }
+
+    // 开启 INT8 weight-only 量化
+    __export void llaisysQwen2ModelQuantizeInt8(struct LlaisysQwen2Model *model) {
+        if (!model || !model->impl) return;
+        try {
+            model->impl->quantize_int8();
+        } catch (const std::exception &e) {
+            std::cerr << "[ERROR] Qwen2 quantize failed: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[ERROR] Qwen2 quantize failed: unknown exception" << std::endl;
+        }
+    }
+
+    // ---- 连续批处理引擎 ----
+    __export int64_t llaisysEngineAddRequest(struct LlaisysQwen2Model *model,
+        int64_t *tokens, size_t n, int64_t max_new_tokens) {
+        if (!model || !model->impl) return -1;
+        try {
+            return model->impl->engine_add_request(tokens, n, max_new_tokens);
+        } catch (const std::exception &e) {
+            std::cerr << "[ERROR] Engine add_request failed: " << e.what() << std::endl;
+            return -1;
+        } catch (...) { return -1; }
+    }
+
+    __export size_t llaisysEngineStep(struct LlaisysQwen2Model *model,
+        int top_k, float top_p, float temperature) {
+        if (!model || !model->impl) return 0;
+        try {
+            return model->impl->engine_step(top_k, top_p, temperature);
+        } catch (const std::exception &e) {
+            std::cerr << "[ERROR] Engine step failed: " << e.what() << std::endl;
+            return 0;
+        } catch (...) { return 0; }
+    }
+
+    __export int llaisysEngineHasUnfinished(struct LlaisysQwen2Model *model) {
+        if (!model || !model->impl) return 0;
+        return model->impl->engine_has_unfinished() ? 1 : 0;
+    }
+    __export size_t llaisysEngineNumSeqs(struct LlaisysQwen2Model *model) {
+        if (!model || !model->impl) return 0;
+        return model->impl->engine_num_seqs();
+    }
+    __export int llaisysEngineIsFinished(struct LlaisysQwen2Model *model, int64_t id) {
+        if (!model || !model->impl) return 1;
+        return model->impl->engine_is_finished(id) ? 1 : 0;
+    }
+    __export size_t llaisysEngineGetOutput(struct LlaisysQwen2Model *model,
+        int64_t id, int64_t *out, size_t cap) {
+        if (!model || !model->impl) return 0;
+        return model->impl->engine_get_output(id, out, cap);
     }
 }

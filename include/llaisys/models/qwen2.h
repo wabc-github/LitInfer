@@ -51,7 +51,24 @@ __C {
     // 初始化KV-Cache（每轮推理前调用）
     __export void llaisysQwen2ModelInitKVCache(struct LlaisysQwen2Model *model);
 
+    // 开启 INT8 weight-only 量化（权重加载完成后调用一次，之后不可再切回 fp16）
+    __export void llaisysQwen2ModelQuantizeInt8(struct LlaisysQwen2Model *model);
+
     // 释放KV-Cache（推理结束后调用）
     __export void llaisysQwen2ModelFreeKVCache(struct LlaisysQwen2Model *model);
+
+    // ---- 连续批处理引擎（P2-2）。前提：已 InitKVCache ----
+    // 添加请求，返回 id（<0 表示失败）。
+    __export int64_t llaisysEngineAddRequest(struct LlaisysQwen2Model *model,
+        int64_t *tokens, size_t n, int64_t max_new_tokens);
+    // 推进一次调度，返回本步完成数。
+    __export size_t llaisysEngineStep(struct LlaisysQwen2Model *model,
+        int top_k, float top_p, float temperature);
+    __export int llaisysEngineHasUnfinished(struct LlaisysQwen2Model *model);
+    __export size_t llaisysEngineNumSeqs(struct LlaisysQwen2Model *model);
+    __export int llaisysEngineIsFinished(struct LlaisysQwen2Model *model, int64_t id);
+    // 取已完成请求输出（仅生成部分），返回写入数。
+    __export size_t llaisysEngineGetOutput(struct LlaisysQwen2Model *model,
+        int64_t id, int64_t *out, size_t cap);
 }
 #endif // LLAISYS_MODELS_QWEN2_H

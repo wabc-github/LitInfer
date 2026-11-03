@@ -1,99 +1,60 @@
 #include "op.hpp"
 
+#include "../../utils.hpp"
+#include "cpu/linear_cpu.hpp"
 namespace llaisys::ops {
 void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
+    PROFILE("linear");  // 计时：linear（含 GEMV/GEMM）
+    if (in->shape().empty() || weight->shape().size() != 2 ||
+        out->shape().empty()) {
+        throw std::runtime_error("linear: invalid tensor rank");
+    }
     // 获取输入参数维度信息
-    size_t batch_size = in->shape()[0];  // M
-    size_t in_features = in->shape()[1]; // K
+    size_t in_features = in->shape().back(); // K
     size_t out_features = weight->shape()[0]; // N
     size_t weight_features = weight->shape()[1]; // K
-    
+
+    // Qwen2 exposes Q/K/V outputs as [tokens, heads, head_dim]. The storage
+    // kernel still computes a row-major matrix, so derive M from element
+    // counts instead of requiring the output tensor to be rank-2.
+    if (in_features == 0 || out_features == 0 ||
+        in->numel() % in_features != 0) {
+        throw std::runtime_error("linear: invalid matrix dimensions");
+    }
+    size_t batch_size = in->numel() / in_features; // M
+
     // 确保输入特征数量匹配
     if (in_features != weight_features) {
-        throw std::runtime_error("Input features and weight features must match");
+        throw std::runtime_error("linear: input and weight features must match");
     }
-    
+
+    // 目前只支持连续张量（框架现有约定）。
+    ASSERT(in->isContiguous() && weight->isContiguous() && out->isContiguous(),
+           "linear: tensors must be contiguous for now");
+
     // 获取数据类型
     llaisysDataType_t dtype = in->dtype();
-    
-    // 对于不同的数据类型执行矩阵乘法和加偏置
-    switch (dtype) {
-        case LLAISYS_DTYPE_F32: {
-            const float* input_data = reinterpret_cast<const float*>(in->data());
-            const float* weight_data = reinterpret_cast<const float*>(weight->data());
-            float* output_data = reinterpret_cast<float*>(out->data());
-            const float* bias_data = bias ? reinterpret_cast<const float*>(bias->data()) : nullptr;
-            
-            // 执行矩阵乘法 Y = X * W^T
-            for (size_t i = 0; i < batch_size; ++i) {
-                for (size_t j = 0; j < out_features; ++j) {
-                    float sum = 0.0f;
-                    for (size_t k = 0; k < in_features; ++k) {
-                        sum += input_data[i * in_features + k] * weight_data[j * in_features + k];
-                    }
-                    
-                    // 加上偏置（如果存在）
-                    if (bias_data) {
-                        sum += bias_data[j];
-                    }
-                    
-                    output_data[i * out_features + j] = sum;
-                }
-            }
-            break;
-        }
-        case LLAISYS_DTYPE_F16: {
-            const fp16_t* input_data = reinterpret_cast<const fp16_t*>(in->data());
-            const fp16_t* weight_data = reinterpret_cast<const fp16_t*>(weight->data());
-            fp16_t* output_data = reinterpret_cast<fp16_t*>(out->data());
-            const fp16_t* bias_data = bias ? reinterpret_cast<const fp16_t*>(bias->data()) : nullptr;
-            
-            // 执行矩阵乘法 Y = X * W^T，使用FP32中间计算
-            for (size_t i = 0; i < batch_size; ++i) {
-                for (size_t j = 0; j < out_features; ++j) {
-                    float sum = 0.0f;
-                    for (size_t k = 0; k < in_features; ++k) {
-                        sum += utils::cast<float>(input_data[i * in_features + k]) * 
-                               utils::cast<float>(weight_data[j * in_features + k]);
-                    }
-                    
-                    // 加上偏置（如果存在）
-                    if (bias_data) {
-                        sum += utils::cast<float>(bias_data[j]);
-                    }
-                    
-                    output_data[i * out_features + j] = utils::cast<fp16_t>(sum);
-                }
-            }
-            break;
-        }
-        case LLAISYS_DTYPE_BF16: {
-            const bf16_t* input_data = reinterpret_cast<const bf16_t*>(in->data());
-            const bf16_t* weight_data = reinterpret_cast<const bf16_t*>(weight->data());
-            bf16_t* output_data = reinterpret_cast<bf16_t*>(out->data());
-            const bf16_t* bias_data = bias ? reinterpret_cast<const bf16_t*>(bias->data()) : nullptr;
-            
-            // 执行矩阵乘法 Y = X * W^T，使用FP32中间计算
-            for (size_t i = 0; i < batch_size; ++i) {
-                for (size_t j = 0; j < out_features; ++j) {
-                    float sum = 0.0f;
-                    for (size_t k = 0; k < in_features; ++k) {
-                        sum += utils::cast<float>(input_data[i * in_features + k]) * 
-                               utils::cast<float>(weight_data[j * in_features + k]);
-                    }
-                    
-                    // 加上偏置（如果存在）
-                    if (bias_data) {
-                        sum += utils::cast<float>(bias_data[j]);
-                    }
-                    
-                    output_data[i * out_features + j] = utils::cast<bf16_t>(sum);
-                }
-            }
-            break;
-        }
-        default:
-            EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
+    if (out->dtype() != dtype || weight->dtype() != dtype) {
+        throw std::runtime_error("linear: dtype mismatch");
     }
+    if (in->deviceType() != weight->deviceType() ||
+        in->deviceId() != weight->deviceId() ||
+        in->deviceType() != out->deviceType() ||
+        in->deviceId() != out->deviceId()) {
+        throw std::runtime_error("linear: device mismatch");
+    }
+    if (out->numel() != batch_size * out_features) {
+        throw std::runtime_error("linear: output element count mismatch");
+    }
+    if (bias && (bias->shape().size() != 1 || bias->shape()[0] != out_features ||
+                 bias->dtype() != dtype || bias->deviceType() != in->deviceType() ||
+                 bias->deviceId() != in->deviceId() || !bias->isContiguous())) {
+        throw std::runtime_error("linear: invalid bias");
+    }
+
+    const void *bias_data = bias ? bias->data() : nullptr;
+    // CPU 路径
+    cpu::linear_dispatch(dtype, in->data(), weight->data(), bias_data, out->data(),
+                         batch_size, out_features, in_features);
 }
 } // namespace llaisys::ops

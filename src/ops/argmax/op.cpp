@@ -1,7 +1,20 @@
 #include "op.hpp"
 
+#include "../../utils.hpp"
+
 namespace llaisys::ops {
 void argmax(tensor_t max_idx, tensor_t max_val, tensor_t vals) {
+    PROFILE("argmax");  // 计时：argmax
+    if (vals->numel() == 0 || max_idx->numel() != 1 || max_val->numel() != 1 ||
+        vals->deviceType() != max_idx->deviceType() ||
+        vals->deviceType() != max_val->deviceType() ||
+        vals->deviceId() != max_idx->deviceId() ||
+        vals->deviceId() != max_val->deviceId() || !vals->isContiguous() ||
+        !max_idx->isContiguous() || !max_val->isContiguous() ||
+        max_idx->dtype() != LLAISYS_DTYPE_I64 ||
+        max_val->dtype() != vals->dtype()) {
+        throw std::runtime_error("argmax: invalid input or output tensors");
+    }
     size_t input_size = vals->numel();
     
     switch (vals->dtype()) {
