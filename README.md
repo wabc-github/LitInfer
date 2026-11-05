@@ -4,7 +4,6 @@
 
 LitInfer 是一个**不依赖 PyTorch 的轻量级 LLM 推理引擎**。它用 C++ 手写 Tensor、Transformer 算子与 Qwen2 前向计算，通过稳定的 C API 暴露给 Python，并在其上实现了算子向量化、INT8 量化、分页 KV Cache、PagedAttention、连续批处理和 OpenAI 兼容的流式服务。
 
-项目目标不是复刻一个工业级框架，而是把大模型推理链路拆开、自己实现一遍：**数据怎么存、矩阵乘怎么快、KV Cache 怎么省、多请求怎么调度**。
 
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-blue)
 ![Python](https://img.shields.io/badge/Python-3.9%2B-green)
@@ -76,24 +75,9 @@ token ids → embedding → [RMSNorm → QKV → RoPE → Attention(KV Cache)
 | INT8 weight-only | 1 | 2.88 – 4.87 | 3.30 – 3.45 |
 | INT8 weight-only | 8 | 1.66 – 2.59 | 4.43 – 4.67 |
 
-**观察到的结论：**
 
-- OpenMP 1→8 线程：decode 提速 **约 1.2–2.0×**，prefill（TTFT）提速 **约 2.0–2.2×**。
-- INT8 单线程 decode 相对 FP16 提速 **约 1.25–1.94×**；8 线程仅 **约 1.3×**，未达到权重字节减半对应的 2×。
-- INT8 greedy 输出与 FP16 的 token 一致率 **81.2%（39/48）**，其中 **2/3 条 prompt 逐 token 100% 一致**。
-- 连续批处理 4 路并发 **8/8 请求成功、0 错误、无崩溃**；当前聚合吞吐约 **1.0–1.16×**，瓶颈在 linear GEMM 未做 M 复用（每个 batch 行重复流式读取权重），不是 PagedAttention。
+> 口径说明：以上为单机 CPU 实测，**不可**与桌面多通道内存 CPU 的 20–30 token/s 直接比较。连续批吞吐数据受 8 GB 内存与双服务进程换页影响，仅作为**正确性证据**，不作为加速结论。原始评测数据位于 [`benchmarks/`](benchmarks/)，其中 [`torch_align.jsonl`](benchmarks/torch_align.jsonl) 记录了与 PyTorch greedy 输出逐 token 一致的证据。
 
-> 口径说明：以上为单机 CPU 实测，**不可**与桌面多通道内存 CPU 的 20–30 token/s 直接比较。连续批吞吐数据受 8 GB 内存与双服务进程换页影响，仅作为**正确性证据**，不作为加速结论。原始评测数据位于 [`benchmarks/`](benchmarks/)，其中 [`torch_align.jsonl`](benchmarks/torch_align.jsonl) 记录了与 PyTorch greedy 输出逐 token 一致（`matched: true`）的证据。
-
-### 为什么 decode 是瓶颈
-
-decode 阶段每生成一个 token 都要流式读取全部线性层权重，是典型的 **memory-bound**：
-
-- FP16 每 token 约流式读取 **2.62 GB** 权重，INT8 约 **1.31 GB**；
-- 本机可用 DRAM 带宽由 prefill 反推约 **14.5 GB/s**，因此 FP16 8 线程的物理下限约 **5.5 token/s**；
-- 当前 AVX 内核内层只有 1 个 FMA 累加器，存在 4-cycle 依赖链，单核计算吞吐被锁死——这是单线程与 prefill 的主要优化空间。
-
----
 
 ## 快速开始
 
@@ -243,12 +227,10 @@ C++ 引擎把所有未完成序列的 query 沿 token 维拼接，共享一次�
 
 当前版本优先保证**正确性与可复现性**，性能优化仍有明确空间：
 
-- [ ] **CUDA / GPU 后端**：仅保留设备抽象骨架，尚未实现；
-- [ ] **多累加器 FMA 内核**：当前单累加器依赖链限制单核吞吐，预期 1.5–2×；
-- [ ] **GEMM M/N 分块**：让一次权重加载服务多行输入，提升 prefill 与连续批吞吐；
-- [ ] **PagedAttention 向量化**：长上下文（≥1K）下仍为标量实现，是下一阶段首要热点；
-- [ ] **量化质量评估**：当前使用 greedy token 一致率，后续补充 PPL 增量指标；
-- [ ] **静态服务并发安全**：`server.py` 使用共享单序列 KV，仅适合串行/流式；并发请使用 `engine_server.py`。
+- **CUDA / GPU 后端**：仅保留设备抽象骨架，尚未实现；
+- **多累加器 FMA 内核**：当前单累加器依赖链限制单核吞吐，预期 1.5–2×；
+- **GEMM M/N 分块**：让一次权重加载服务多行输入，提升 prefill 与连续批吞吐；
+- **PagedAttention 向量化**：长上下文（≥1K）下仍为标量实现，是下一阶段首要热点；
 
 ---
 
